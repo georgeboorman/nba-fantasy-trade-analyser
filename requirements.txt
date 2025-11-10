@@ -1,0 +1,11 @@
+pandas
+numpy
+plotly
+scikit-learn
+seaborn
+requests
+pingouin
+jupyter
+ipykernel
+lxml
+streamlit
