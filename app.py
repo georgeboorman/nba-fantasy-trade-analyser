@@ -13,78 +13,32 @@ st.set_page_config(
 @st.cache_data
 def load_data():
     import os
-    # Try to load 2026 data
-    df_2026 = pd.DataFrame()
-    csv_2026_path = 'nba_player_averages_2026.csv'
+    csv_path = 'nba_player_averages_2026.csv'
     
-    if os.path.exists(csv_2026_path):
-        try:
-            df_2026 = pd.read_csv(csv_2026_path)
-            if len(df_2026) > 0:
-                df_2026['Season'] = 2026
-        except Exception as e:
-            st.warning(f"Error loading 2026 data: {str(e)}. Using 2025 data only.")
-    else:
-        st.warning("2026 data file not found. Using 2025 data only.")
-    
-    # Load historical data to get 2025 season as fallback
-    try:
-        df_all = pd.read_csv('nba_player_averages_per_season.csv')
-        df_2025 = df_all[df_all['Season'] == 2025].copy()
-    except FileNotFoundError:
-        df_2025 = pd.DataFrame()
-        st.warning("Historical data file not found.")
-    
-    # Combine data: prioritize 2026, fallback to 2025
-    combined_data = []
-    players_processed = set()
-    
-    # Create a lookup for 2026 players and their game counts
-    df_2026_lookup = {}
-    if len(df_2026) > 0:
-        for _, row in df_2026.iterrows():
-            player = row['Player']
-            games = row.get('G', 0)
-            df_2026_lookup[player] = {'row': row, 'games': games if pd.notna(games) else 0}
-    
-    # First, add all 2026 players who have played at least 1 game
-    for player, info in df_2026_lookup.items():
-        if info['games'] > 0:
-            combined_data.append(info['row'])
-            players_processed.add(player)
-    
-    # Then, add 2025 players who either:
-    # 1. Don't exist in 2026 data, OR
-    # 2. Exist in 2026 but have 0 games
-    if len(df_2025) > 0:
-        for _, row in df_2025.iterrows():
-            player = row['Player']
-            if player not in df_2026_lookup:
-                # Player doesn't exist in 2026, use 2025 data
-                if player not in players_processed:
-                    combined_data.append(row)
-                    players_processed.add(player)
-            else:
-                # Player exists in 2026, check if they have 0 games
-                games_2026 = df_2026_lookup[player]['games']
-                if games_2026 == 0:
-                    # Remove the 2026 entry (if it was added) and use 2025 instead
-                    combined_data = [r for r in combined_data if r['Player'] != player]
-                    combined_data.append(row)
-                    if player not in players_processed:
-                        players_processed.add(player)
-    
-    if len(combined_data) == 0:
-        st.error("No data available. Please check your data files.")
+    if not os.path.exists(csv_path):
+        st.error(f"Data file not found: {csv_path}. Please run refresh_data.py to generate the data file.")
         return pd.DataFrame()
     
-    df_combined = pd.DataFrame(combined_data)
-    
-    # Remove Rk column if it exists
-    if 'Rk' in df_combined.columns:
-        df_combined = df_combined.drop(columns=['Rk'])
-    
-    return df_combined
+    try:
+        df = pd.read_csv(csv_path)
+        
+        if len(df) == 0:
+            st.warning("Data file is empty. Please run refresh_data.py to update the data.")
+            return pd.DataFrame()
+        
+        # Ensure Season column exists
+        if 'Season' not in df.columns:
+            df['Season'] = 2026
+        
+        # Remove Rk column if it exists
+        if 'Rk' in df.columns:
+            df = df.drop(columns=['Rk'])
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return pd.DataFrame()
 
 df = load_data()
 
