@@ -5,13 +5,40 @@ This script scrapes and updates the current season (2025-26) data CSV file.
 Run this script daily via cron job to keep data up to date.
 """
 
-import pandas as pd
-import numpy as np
-import time
 import sys
 import os
 from datetime import datetime
 import logging
+
+from nba_api.stats.endpoints import leaguedashplayerstats
+
+# Maps nba_api's LeagueDashPlayerStats columns onto the column names the
+# rest of this app expects (originally scraped from basketball-reference).
+COLUMN_MAP = {
+    "PLAYER_NAME": "Player",
+    "TEAM_ABBREVIATION": "Team",
+    "AGE": "Age",
+    "GP": "G",
+    "MIN": "MP",
+    "FGM": "FG",
+    "FGA": "FGA",
+    "FG_PCT": "FG%",
+    "FG3M": "3P",
+    "FG3A": "3PA",
+    "FG3_PCT": "3P%",
+    "FTM": "FT",
+    "FTA": "FTA",
+    "FT_PCT": "FT%",
+    "OREB": "ORB",
+    "DREB": "DRB",
+    "REB": "TRB",
+    "AST": "AST",
+    "TOV": "TOV",
+    "STL": "STL",
+    "BLK": "BLK",
+    "PF": "PF",
+    "PTS": "PTS",
+}
 
 # Set up logging
 log_dir = os.path.join(os.path.dirname(__file__), 'logs')
@@ -30,25 +57,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def scrape_current_season_data():
-    """Scrape 2025-26 NBA per game statistics and save to CSV."""
+    """Fetch 2025-26 NBA per game statistics from stats.nba.com and save to CSV."""
     try:
         logger.info("Starting 2025-26 season data scrape...")
-        year = 2026  # 2025-26 season is represented as 2026 in basketball-reference
-        url = f"https://www.basketball-reference.com/leagues/NBA_{year}_per_game.html"
-        
-        logger.info(f"Fetching data from {url}...")
-        data = pd.read_html(url)
-        
-        # Removing first element from list
-        data = data.pop(0)
-        
+        year = 2026  # 2025-26 season is represented as 2026 in the rest of this app
+        season = "2025-26"
+
+        logger.info(f"Fetching data from stats.nba.com for season {season}...")
+        response = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=season,
+            per_mode_detailed="PerGame",
+            timeout=30,
+        )
+        data = response.get_data_frames()[0]
+
+        # Keep and rename only the columns the rest of the app expects
+        data = data[list(COLUMN_MAP.keys())].rename(columns=COLUMN_MAP)
+
         # Adding a column for season
         data['Season'] = round(year)
-        
-        # Drop the Rk column if it exists
-        if "Rk" in data.columns:
-            data.drop(columns=["Rk"], inplace=True)
-        
+
         # Get absolute path to ensure we save in the correct directory
         script_dir = os.path.dirname(os.path.abspath(__file__))
         csv_path = os.path.join(script_dir, 'nba_player_averages_2026.csv')
