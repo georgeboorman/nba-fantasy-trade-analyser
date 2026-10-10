@@ -50,12 +50,17 @@ players = sorted(df_current['Player'].unique().tolist())
 
 # Stats to display
 stat_columns = {
+    'G': 'Games Played',
     'PTS': 'Points',
     'AST': 'Assists',
     'TRB': 'Rebounds',
     'STL': 'Steals',
     'BLK': 'Blocks',
     '3P': '3 Pointers',
+    'FGA': 'Field Goals Attempted',
+    'FG': 'Field Goals',
+    'FTA': 'Free Throws Attempted',
+    'FT': 'Free Throws',
     'FT%': 'Free Throw %',
     'FG%': 'Field Goal %',
     'TOV': 'Turnovers'
