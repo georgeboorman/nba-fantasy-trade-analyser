@@ -159,10 +159,14 @@ def calculate_combined_stats(selected_players, df_data):
     stats = {}
     
     # Sum counting stats
-    counting_stats = ['PTS', 'AST', 'TRB', 'STL', 'BLK', '3P', 'TOV']
+    counting_stats = ['PTS', 'AST', 'TRB', 'STL', 'BLK', '3P', 'TOV', 'FG', 'FGA', 'FT', 'FTA']
     for stat in counting_stats:
         if stat in player_data.columns:
             stats[stat] = player_data[stat].sum()
+
+    # Games played doesn't make sense summed across players, so average it instead
+    if 'G' in player_data.columns:
+        stats['G'] = player_data['G'].mean()
     
     # Calculate weighted averages for percentages
     # FT%: weighted by FTA
