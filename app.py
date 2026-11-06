@@ -9,38 +9,46 @@ st.set_page_config(
     layout="wide"
 )
 
+# Seasons available in the app, keyed by the label shown in the UI
+SEASON_OPTIONS = {
+    "2026-27 (Current)": "nba_player_averages_2027.csv",
+    "2025-26": "nba_player_averages_2026.csv",
+}
+
 # Load data
 @st.cache_data
-def load_data():
+def load_data(csv_path):
     import os
-    csv_path = 'nba_player_averages_2026.csv'
-    
+
     if not os.path.exists(csv_path):
         st.error(f"Data file not found: {csv_path}. Please run refresh_data.py to generate the data file.")
         return pd.DataFrame()
-    
+
     try:
         df = pd.read_csv(csv_path)
-        
+
         if len(df) == 0:
             st.warning("Data file is empty. Please run refresh_data.py to update the data.")
             return pd.DataFrame()
-        
-        # Ensure Season column exists
-        if 'Season' not in df.columns:
-            df['Season'] = 2026
-        
+
         # Remove Rk column if it exists
         if 'Rk' in df.columns:
             df = df.drop(columns=['Rk'])
-        
+
         return df
-        
+
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
         return pd.DataFrame()
 
-df = load_data()
+with st.sidebar:
+    selected_season_label = st.selectbox(
+        "Season",
+        list(SEASON_OPTIONS.keys()),
+        help="Choose which season's per-game stats to use"
+    )
+
+df = load_data(SEASON_OPTIONS[selected_season_label])
 
 # Use the combined data
 df_current = df.copy()

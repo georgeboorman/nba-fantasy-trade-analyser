@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Data refresh script for NBA Fantasy Trade Analyser.
-This script scrapes and updates the current season (2025-26) data CSV file.
-Run this script daily via cron job to keep data up to date.
+This script fetches per-game stats for the tracked NBA seasons and updates
+their CSV files. Run this script daily via cron job to keep data up to date.
 """
 
 import sys
@@ -11,6 +11,14 @@ from datetime import datetime
 import logging
 
 from nba_api.stats.endpoints import leaguedashplayerstats
+
+# Seasons tracked by this app, keyed by the file-name year used throughout
+# the rest of the app (matches the convention of the original
+# basketball-reference scrape, where e.g. the 2025-26 season is "2026").
+SEASONS = {
+    2026: "2025-26",
+    2027: "2026-27",
+}
 
 # Maps nba_api's LeagueDashPlayerStats columns onto the column names the
 # rest of this app expects (originally scraped from basketball-reference).
@@ -56,12 +64,10 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def scrape_current_season_data():
-    """Fetch 2025-26 NBA per game statistics from stats.nba.com and save to CSV."""
+def scrape_season_data(year, season):
+    """Fetch NBA per game statistics for a given season from stats.nba.com and save to CSV."""
     try:
-        logger.info("Starting 2025-26 season data scrape...")
-        year = 2026  # 2025-26 season is represented as 2026 in the rest of this app
-        season = "2025-26"
+        logger.info(f"Starting {season} season data scrape...")
 
         logger.info(f"Fetching data from stats.nba.com for season {season}...")
         response = leaguedashplayerstats.LeagueDashPlayerStats(
@@ -79,37 +85,41 @@ def scrape_current_season_data():
 
         # Get absolute path to ensure we save in the correct directory
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_path = os.path.join(script_dir, 'nba_player_averages_2026.csv')
-        
+        csv_path = os.path.join(script_dir, f'nba_player_averages_{year}.csv')
+
         # Save to csv (overwrites existing file)
         data.to_csv(csv_path, index=False)
-        logger.info(f"Successfully scraped and saved 2025-26 season data to {csv_path} ({len(data)} rows)")
+        logger.info(f"Successfully scraped and saved {season} season data to {csv_path} ({len(data)} rows)")
         return True
-        
+
     except Exception as e:
-        logger.error(f"Error in scrape_current_season_data: {str(e)}", exc_info=True)
+        logger.error(f"Error in scrape_season_data for {season}: {str(e)}", exc_info=True)
         return False
 
 def main():
-    """Main function to run the scraping operation."""
+    """Main function to run the scraping operation for all tracked seasons."""
     logger.info("=" * 60)
-    logger.info("Starting NBA data refresh process (2025-26 season)")
+    logger.info("Starting NBA data refresh process")
     logger.info("=" * 60)
-    
+
     # Change to script directory to ensure relative paths work
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    
-    # Run scraping operation
-    success = scrape_current_season_data()
-    
+
+    # Run scraping operation for each tracked season
+    results = {
+        season: scrape_season_data(year, season)
+        for year, season in SEASONS.items()
+    }
+
     # Summary
     logger.info("=" * 60)
     logger.info("Data refresh summary:")
-    logger.info(f"  2025-26 season data: {'SUCCESS' if success else 'FAILED'}")
+    for season, success in results.items():
+        logger.info(f"  {season} season data: {'SUCCESS' if success else 'FAILED'}")
     logger.info("=" * 60)
-    
-    if success:
+
+    if all(results.values()):
         logger.info("Data refresh completed successfully!")
         return 0
     else:
@@ -119,4 +129,3 @@ def main():
 if __name__ == "__main__":
     exit_code = main()
     sys.exit(exit_code)
-
