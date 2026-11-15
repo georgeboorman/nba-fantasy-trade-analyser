@@ -765,11 +765,32 @@ with tab3:
                 else:
                     st.caption("Select players above to edit their games this week.")
 
-        if my_team and opponent_team:
-            my_totals, my_player_data = project_weekly_totals_from_table(my_week_table, df_forecast)
-            opp_totals, opp_player_data = project_weekly_totals_from_table(opp_week_table, df_forecast)
+        st.markdown("---")
+        run_forecast = st.button("📊 Run Forecast", type="primary")
 
-            st.subheader(f"Projected Totals ({week_start} to {week_end})")
+        if run_forecast:
+            if my_team and opponent_team:
+                my_totals, my_player_data = project_weekly_totals_from_table(my_week_table, df_forecast)
+                opp_totals, opp_player_data = project_weekly_totals_from_table(opp_week_table, df_forecast)
+                st.session_state['forecast_result'] = {
+                    'my_totals': my_totals,
+                    'opp_totals': opp_totals,
+                    'my_player_data': my_player_data,
+                    'opp_player_data': opp_player_data,
+                    'week_start': week_start,
+                    'week_end': week_end,
+                }
+            else:
+                st.warning("Select players for both your team and your opponent's team before running the forecast.")
+
+        forecast_result = st.session_state.get('forecast_result')
+        if forecast_result:
+            my_totals = forecast_result['my_totals']
+            opp_totals = forecast_result['opp_totals']
+            my_player_data = forecast_result['my_player_data']
+            opp_player_data = forecast_result['opp_player_data']
+
+            st.subheader(f"Projected Totals ({forecast_result['week_start']} to {forecast_result['week_end']})")
 
             forecast_stat_columns = {
                 'Games This Week': 'Games This Week',
@@ -817,8 +838,9 @@ with tab3:
                         opp_player_data[[c for c in breakdown_cols if c in opp_player_data.columns]],
                         use_container_width=True, hide_index=True
                     )
-        elif my_team or opponent_team:
-            st.info("Select players for both your team and your opponent's team to see the forecast.")
         else:
-            st.info("Select players for both teams above to forecast this week's matchup.")
+            st.info(
+                "Select players for both teams, adjust games this week if needed, then click "
+                "'📊 Run Forecast' to see projected totals."
+            )
 
