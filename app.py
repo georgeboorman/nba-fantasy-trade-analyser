@@ -245,37 +245,37 @@ def calculate_combined_stats(selected_players, df_data):
     return stats
 
 @st.cache_data(ttl=3600)
-def load_schedule(season):
-    """Fetch the regular-season game schedule (date + home/away team) for a season."""
-    from nba_api.stats.endpoints import scheduleleaguev2
-    try:
-        response = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=30)
-        games = response.get_data_frames()[0]
-        # gameId prefix '002' marks regular season games (001 preseason, 004 playoffs, etc.)
-        games = games[games['gameId'].astype(str).str.startswith('002')].copy()
-        games['gameDate'] = pd.to_datetime(games['gameDate']).dt.date
-        return games[['gameDate', 'homeTeam_teamTricode', 'awayTeam_teamTricode']]
-    except Exception as e:
-        st.error(f"Could not load NBA schedule: {str(e)}")
-        return pd.DataFrame()
+def fetch_schedule(season):
+    """Fetch the season's game schedule and week boundaries from stats.nba.com, with retries.
 
-@st.cache_data(ttl=3600)
-def load_schedule_weeks(season):
-    """Fetch the NBA's own week boundaries (start/end date) for a season."""
+    Returns (games_df, weeks_df). Raises on failure instead of returning an empty
+    result, so a transient timeout doesn't get cached as "no schedule" for an hour.
+    """
     from nba_api.stats.endpoints import scheduleleaguev2
-    try:
-        response = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=30)
-        weeks = response.get_data_frames()[1].copy()
-        weeks = weeks[weeks['weekName'] != '']
-        weeks['startDate'] = pd.to_datetime(weeks['startDate']).dt.date
-        weeks['endDate'] = pd.to_datetime(weeks['endDate']).dt.date
-        return weeks[['weekName', 'startDate', 'endDate']]
-    except Exception:
-        return pd.DataFrame()
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=60)
+            games = response.get_data_frames()[0].copy()
+            weeks = response.get_data_frames()[1].copy()
 
-def default_week_range(season):
+            # gameId prefix '002' marks regular season games (001 preseason, 004 playoffs, etc.)
+            games = games[games['gameId'].astype(str).str.startswith('002')].copy()
+            games['gameDate'] = pd.to_datetime(games['gameDate']).dt.date
+            games = games[['gameDate', 'homeTeam_teamTricode', 'awayTeam_teamTricode']]
+
+            weeks = weeks[weeks['weekName'] != ''].copy()
+            weeks['startDate'] = pd.to_datetime(weeks['startDate']).dt.date
+            weeks['endDate'] = pd.to_datetime(weeks['endDate']).dt.date
+            weeks = weeks[['weekName', 'startDate', 'endDate']]
+
+            return games, weeks
+        except Exception as e:
+            last_error = e
+    raise RuntimeError(str(last_error))
+
+def default_week_range(weeks):
     """Find the NBA week containing today, falling back to the next 7 days."""
-    weeks = load_schedule_weeks(season)
     today = date.today()
     if not weeks.empty:
         current = weeks[(weeks['startDate'] <= today) & (weeks['endDate'] >= today)]
@@ -640,8 +640,21 @@ with tab3:
     df_forecast = load_data(CURRENT_SEASON_CSV)
     forecast_players = sorted(df_forecast['Player'].unique().tolist()) if not df_forecast.empty else []
 
-    schedule = load_schedule(CURRENT_SEASON_STR)
-    week_start_default, week_end_default = default_week_range(CURRENT_SEASON_STR)
+    try:
+        schedule, schedule_weeks = fetch_schedule(CURRENT_SEASON_STR)
+        schedule_error = None
+    except Exception as e:
+        schedule, schedule_weeks = pd.DataFrame(), pd.DataFrame()
+        schedule_error = str(e)
+
+    if schedule_error:
+        st.warning(
+            f"Couldn't load the NBA schedule right now ({schedule_error}). "
+            "Games-this-week will default to 0 until it loads — use 🔄 Clear Cache & "
+            "Reload Data in the sidebar to retry, or just edit 'Games This Week' manually below."
+        )
+
+    week_start_default, week_end_default = default_week_range(schedule_weeks)
 
     if 'week_start' not in st.session_state:
         st.session_state.week_start = week_start_default
@@ -706,7 +719,7 @@ with tab3:
                 help="No default — set this each week for your matchup"
             )
 
-        if my_team and opponent_team:
+        if my_team or opponent_team:
             st.subheader("Games This Week")
             st.caption(
                 "Auto-filled from the schedule and current injury reports (🔴 Out defaults to 0 games). "
@@ -714,7 +727,6 @@ with tab3:
                 "player questionable for some games but not others."
             )
 
-            editor_col1, editor_col2 = st.columns(2)
             editor_column_config = {
                 'Games This Week': st.column_config.NumberColumn(min_value=0, max_value=7, step=1),
                 'Team Games': st.column_config.NumberColumn(disabled=True),
@@ -723,26 +735,37 @@ with tab3:
                 'Team': st.column_config.TextColumn(disabled=True),
             }
 
+            editor_col1, editor_col2 = st.columns(2)
+            my_week_table = None
+            opp_week_table = None
+
             with editor_col1:
                 st.markdown("**My Team**")
-                my_week_table = st.data_editor(
-                    build_player_week_table(my_team, df_forecast, team_games, injury_report),
-                    column_config=editor_column_config,
-                    hide_index=True,
-                    use_container_width=True,
-                    key="my_week_editor",
-                )
+                if my_team:
+                    my_week_table = st.data_editor(
+                        build_player_week_table(my_team, df_forecast, team_games, injury_report),
+                        column_config=editor_column_config,
+                        hide_index=True,
+                        use_container_width=True,
+                        key="my_week_editor",
+                    )
+                else:
+                    st.caption("Select players above to edit their games this week.")
 
             with editor_col2:
                 st.markdown("**Opponent**")
-                opp_week_table = st.data_editor(
-                    build_player_week_table(opponent_team, df_forecast, team_games, injury_report),
-                    column_config=editor_column_config,
-                    hide_index=True,
-                    use_container_width=True,
-                    key="opp_week_editor",
-                )
+                if opponent_team:
+                    opp_week_table = st.data_editor(
+                        build_player_week_table(opponent_team, df_forecast, team_games, injury_report),
+                        column_config=editor_column_config,
+                        hide_index=True,
+                        use_container_width=True,
+                        key="opp_week_editor",
+                    )
+                else:
+                    st.caption("Select players above to edit their games this week.")
 
+        if my_team and opponent_team:
             my_totals, my_player_data = project_weekly_totals_from_table(my_week_table, df_forecast)
             opp_totals, opp_player_data = project_weekly_totals_from_table(opp_week_table, df_forecast)
 
