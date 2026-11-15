@@ -275,7 +275,7 @@ def fetch_schedule(season):
     raise RuntimeError(str(last_error))
 
 def default_week_range(weeks):
-    """Find the NBA week containing today, falling back to the next 7 days."""
+    """Find the NBA week containing today, falling back to the Monday-Sunday week containing today."""
     today = date.today()
     if not weeks.empty:
         current = weeks[(weeks['startDate'] <= today) & (weeks['endDate'] >= today)]
@@ -284,7 +284,9 @@ def default_week_range(weeks):
         upcoming = weeks[weeks['startDate'] >= today].sort_values('startDate')
         if len(upcoming) > 0:
             return upcoming.iloc[0]['startDate'], upcoming.iloc[0]['endDate']
-    return today, today + timedelta(days=6)
+    # Fallback: fantasy matchups run Monday-Sunday, so align to that even without schedule data
+    monday = today - timedelta(days=today.weekday())
+    return monday, monday + timedelta(days=6)
 
 def games_per_team(schedule_df, start_date, end_date):
     """Count how many games each team plays between start_date and end_date (inclusive)."""
