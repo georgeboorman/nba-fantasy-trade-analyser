@@ -103,7 +103,9 @@ stat_columns = {
     'FT': 'Free Throws',
     'FT%': 'Free Throw %',
     'FG%': 'Field Goal %',
-    'TOV': 'Turnovers'
+    'TOV': 'Turnovers',
+    'DD': 'Double-Doubles (Avg)',
+    'TD': 'Triple-Doubles (Avg)',
 }
 
 # Categories that count for double-doubles and triple-doubles
@@ -199,7 +201,14 @@ def calculate_combined_stats(selected_players, df_data):
     # Games played doesn't make sense summed across players, so average it instead
     if 'G' in player_data.columns:
         stats['G'] = player_data['G'].mean()
-    
+
+    # Average double-doubles/triple-doubles per game, summed across the set
+    # (each player's own DD/TD rate, so e.g. two 0.5-DD/game players = 1.0 combined)
+    for dd_td_col in ['DD', 'TD']:
+        if dd_td_col in player_data.columns and 'G' in player_data.columns:
+            rate = player_data[dd_td_col] / player_data['G'].replace(0, np.nan)
+            stats[dd_td_col] = rate.fillna(0).sum()
+
     # Calculate weighted averages for percentages
     # FT%: weighted by FTA
     # Note: Column name might be 'FT%' (with % sign)
@@ -551,81 +560,64 @@ with tab2:
         set2_stats = calculate_combined_stats(set2_players, df_current)
         
         if set1_stats and set2_stats:
-            # Get DD/TD info for both sets
-            set1_dd_td = get_player_dd_td_info(set1_players, df_current)
-            set2_dd_td = get_player_dd_td_info(set2_players, df_current)
-            
-            # Create comparison table
+            # Create comparison table (Difference = Set 2 - Set 1)
             comparison_data = []
             for stat_key, stat_name in stat_columns.items():
                 set1_val = set1_stats.get(stat_key, 0)
                 set2_val = set2_stats.get(stat_key, 0)
-                diff = set1_val - set2_val
-                
+                diff = set2_val - set1_val
+                is_pct = stat_key in ['FT%', 'FG%']
+
                 comparison_data.append({
                     'Statistic': stat_name,
-                    'Set 1': f"{set1_val:.2f}" if stat_key in ['FT%', 'FG%'] else f"{set1_val:.1f}",
-                    'Set 2': f"{set2_val:.2f}" if stat_key in ['FT%', 'FG%'] else f"{set2_val:.1f}",
-                    'Difference': f"{diff:+.2f}" if stat_key in ['FT%', 'FG%'] else f"{diff:+.1f}"
+                    'Set 1': f"{set1_val:.2f}" if is_pct else f"{set1_val:.1f}",
+                    'Set 2': f"{set2_val:.2f}" if is_pct else f"{set2_val:.1f}",
+                    'Difference': f"{diff:+.2f}" if is_pct else f"{diff:+.1f}"
                 })
-            
-            # Add DD/TD to comparison
-            comparison_data.append({
-                'Statistic': 'Double-Doubles (Players)',
-                'Set 1': str(set1_dd_td['double_double_count']),
-                'Set 2': str(set2_dd_td['double_double_count']),
-                'Difference': f"{set1_dd_td['double_double_count'] - set2_dd_td['double_double_count']:+d}"
-            })
-            comparison_data.append({
-                'Statistic': 'Triple-Doubles (Players)',
-                'Set 1': str(set1_dd_td['triple_double_count']),
-                'Set 2': str(set2_dd_td['triple_double_count']),
-                'Difference': f"{set1_dd_td['triple_double_count'] - set2_dd_td['triple_double_count']:+d}"
-            })
-            
+
             comparison_df = pd.DataFrame(comparison_data)
             st.dataframe(comparison_df, use_container_width=True, hide_index=True)
-            
+
             # Visual comparison with metrics
             st.subheader("Side-by-Side Comparison")
             comp_col1, comp_col2, comp_col3 = st.columns(3)
-            
+
             with comp_col1:
                 st.markdown("### Set 1 Stats")
-                display_stats(set1_stats, dd_td_info=set1_dd_td)
-            
+                display_stats(set1_stats)
+
             with comp_col2:
                 st.markdown("### Set 2 Stats")
-                display_stats(set2_stats, dd_td_info=set2_dd_td)
-            
+                display_stats(set2_stats)
+
             with comp_col3:
-                st.markdown("### Difference (Set 1 - Set 2)")
+                st.markdown("### Difference (Set 2 - Set 1)")
                 diff_stats = {}
                 for stat_key in stat_columns.keys():
                     if stat_key in set1_stats and stat_key in set2_stats:
-                        diff_stats[stat_key] = set1_stats[stat_key] - set2_stats[stat_key]
-                
+                        diff_stats[stat_key] = set2_stats[stat_key] - set1_stats[stat_key]
+
                 # Display differences
                 diff_col1, diff_col2, diff_col3 = st.columns(3)
-                
+
                 with diff_col1:
                     st.metric("Points", f"{diff_stats.get('PTS', 0):.1f}")
                     st.metric("Assists", f"{diff_stats.get('AST', 0):.1f}")
                     st.metric("Rebounds", f"{diff_stats.get('TRB', 0):.1f}")
-                
+
                 with diff_col2:
                     st.metric("Steals", f"{diff_stats.get('STL', 0):.1f}")
                     st.metric("Blocks", f"{diff_stats.get('BLK', 0):.1f}")
                     st.metric("3 Pointers", f"{diff_stats.get('3P', 0):.1f}")
-                
+
                 with diff_col3:
                     st.metric("Free Throw %", f"{diff_stats.get('FT%', 0):.2f}%")
                     st.metric("Field Goal %", f"{diff_stats.get('FG%', 0):.2f}%")
                     st.metric("Turnovers", f"{diff_stats.get('TOV', 0):.1f}")
-                
+
                 st.markdown("---")
-                st.metric("Double-Doubles", f"{set1_dd_td['double_double_count'] - set2_dd_td['double_double_count']:+d}")
-                st.metric("Triple-Doubles", f"{set1_dd_td['triple_double_count'] - set2_dd_td['triple_double_count']:+d}")
+                st.metric("Double-Doubles (Avg)", f"{diff_stats.get('DD', 0):+.2f}")
+                st.metric("Triple-Doubles (Avg)", f"{diff_stats.get('TD', 0):+.2f}")
         else:
             st.warning("Could not calculate stats for one or both sets.")
     elif set1_players or set2_players:
