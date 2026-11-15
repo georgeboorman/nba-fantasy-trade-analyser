@@ -43,7 +43,9 @@ def save_team_config(my_team):
 
 # Load data
 @st.cache_data
-def load_data(csv_path):
+def load_data(csv_path, _mtime=None):
+    # _mtime busts the cache whenever the file on disk changes (e.g. the nightly
+    # refresh_data.py run), without needing a manual "Clear Cache" click.
     import os
 
     if not os.path.exists(csv_path):
@@ -67,6 +69,9 @@ def load_data(csv_path):
         st.error(f"Error loading data: {str(e)}")
         return pd.DataFrame()
 
+def csv_mtime(csv_path):
+    return os.path.getmtime(csv_path) if os.path.exists(csv_path) else None
+
 with st.sidebar:
     selected_season_label = st.selectbox(
         "Season",
@@ -74,7 +79,8 @@ with st.sidebar:
         help="Choose which season's per-game stats to use"
     )
 
-df = load_data(SEASON_OPTIONS[selected_season_label])
+selected_season_csv = SEASON_OPTIONS[selected_season_label]
+df = load_data(selected_season_csv, csv_mtime(selected_season_csv))
 
 # Use the combined data
 df_current = df.copy()
@@ -634,7 +640,7 @@ with tab3:
         "player's team has scheduled and their per-game averages this season."
     )
 
-    df_forecast = load_data(CURRENT_SEASON_CSV)
+    df_forecast = load_data(CURRENT_SEASON_CSV, csv_mtime(CURRENT_SEASON_CSV))
     forecast_players = sorted(df_forecast['Player'].unique().tolist()) if not df_forecast.empty else []
 
     try:
