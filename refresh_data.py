@@ -10,7 +10,9 @@ import os
 from datetime import datetime
 import logging
 
-from nba_api.stats.endpoints import leaguedashplayerstats
+import pandas as pd
+
+from nba_api.stats.endpoints import leaguedashplayerstats, scheduleleaguev2
 
 # Seasons tracked by this app, keyed by the file-name year used throughout
 # the rest of the app (matches the convention of the original
@@ -19,6 +21,10 @@ SEASONS = {
     2026: "2025-26",
     2027: "2026-27",
 }
+
+# The weekly matchup forecast's schedule lookup only needs the current season
+CURRENT_SEASON_YEAR = 2027
+CURRENT_SEASON_STR = SEASONS[CURRENT_SEASON_YEAR]
 
 # Maps nba_api's LeagueDashPlayerStats columns onto the column names the
 # rest of this app expects (originally scraped from basketball-reference).
@@ -98,6 +104,36 @@ def scrape_season_data(year, season):
         logger.error(f"Error in scrape_season_data for {season}: {str(e)}", exc_info=True)
         return False
 
+def scrape_schedule_data(season):
+    """Fetch the season's game schedule and week boundaries and save to CSV."""
+    try:
+        logger.info(f"Starting {season} schedule scrape...")
+
+        response = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=60)
+        games = response.get_data_frames()[0].copy()
+        weeks = response.get_data_frames()[1].copy()
+
+        # gameId prefix '002' marks regular season games (001 preseason, 004 playoffs, etc.)
+        games = games[games['gameId'].astype(str).str.startswith('002')].copy()
+        games['gameDate'] = pd.to_datetime(games['gameDate']).dt.date
+        games = games[['gameDate', 'homeTeam_teamTricode', 'awayTeam_teamTricode']]
+
+        weeks = weeks[weeks['weekName'] != ''].copy()
+        weeks['startDate'] = pd.to_datetime(weeks['startDate']).dt.date
+        weeks['endDate'] = pd.to_datetime(weeks['endDate']).dt.date
+        weeks = weeks[['weekName', 'startDate', 'endDate']]
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        games.to_csv(os.path.join(script_dir, 'nba_schedule_games.csv'), index=False)
+        weeks.to_csv(os.path.join(script_dir, 'nba_schedule_weeks.csv'), index=False)
+
+        logger.info(f"Successfully scraped and saved {season} schedule ({len(games)} games, {len(weeks)} weeks)")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in scrape_schedule_data for {season}: {str(e)}", exc_info=True)
+        return False
+
 def main():
     """Main function to run the scraping operation for all tracked seasons."""
     logger.info("=" * 60)
@@ -110,15 +146,16 @@ def main():
 
     # Run scraping operation for each tracked season
     results = {
-        season: scrape_season_data(year, season)
+        f"{season} season data": scrape_season_data(year, season)
         for year, season in SEASONS.items()
     }
+    results[f"{CURRENT_SEASON_STR} schedule"] = scrape_schedule_data(CURRENT_SEASON_STR)
 
     # Summary
     logger.info("=" * 60)
     logger.info("Data refresh summary:")
-    for season, success in results.items():
-        logger.info(f"  {season} season data: {'SUCCESS' if success else 'FAILED'}")
+    for label, success in results.items():
+        logger.info(f"  {label}: {'SUCCESS' if success else 'FAILED'}")
     logger.info("=" * 60)
 
     if all(results.values()):

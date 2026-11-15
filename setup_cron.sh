@@ -1,7 +1,8 @@
 #!/bin/bash
 # Setup script for daily cron job to refresh NBA data
 # This script adds a cron job to run refresh_data.py daily, which refreshes
-# per-game stats for both the current (2026-27) and previous (2025-26) seasons.
+# per-game stats for both the current (2026-27) and previous (2025-26) seasons,
+# plus the current season's game schedule used by the Weekly Matchup forecast.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_PATH=$(which python3)

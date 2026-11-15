@@ -244,35 +244,30 @@ def calculate_combined_stats(selected_players, df_data):
     
     return stats
 
+SCHEDULE_GAMES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nba_schedule_games.csv')
+SCHEDULE_WEEKS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nba_schedule_weeks.csv')
+
 @st.cache_data(ttl=3600)
-def fetch_schedule(season):
-    """Fetch the season's game schedule and week boundaries from stats.nba.com, with retries.
+def load_schedule():
+    """Load the pre-fetched season schedule and week boundaries from disk.
 
-    Returns (games_df, weeks_df). Raises on failure instead of returning an empty
-    result, so a transient timeout doesn't get cached as "no schedule" for an hour.
+    These CSVs are refreshed daily by refresh_data.py, so the app never has to make a
+    live call to stats.nba.com (which can hang or time out) just to render this tab.
+    Returns (games_df, weeks_df); raises if the CSVs haven't been generated yet.
     """
-    from nba_api.stats.endpoints import scheduleleaguev2
-    last_error = None
-    for attempt in range(3):
-        try:
-            response = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=60)
-            games = response.get_data_frames()[0].copy()
-            weeks = response.get_data_frames()[1].copy()
+    if not os.path.exists(SCHEDULE_GAMES_CSV) or not os.path.exists(SCHEDULE_WEEKS_CSV):
+        raise FileNotFoundError(
+            "nba_schedule_games.csv / nba_schedule_weeks.csv not found. Run refresh_data.py to generate them."
+        )
 
-            # gameId prefix '002' marks regular season games (001 preseason, 004 playoffs, etc.)
-            games = games[games['gameId'].astype(str).str.startswith('002')].copy()
-            games['gameDate'] = pd.to_datetime(games['gameDate']).dt.date
-            games = games[['gameDate', 'homeTeam_teamTricode', 'awayTeam_teamTricode']]
+    games = pd.read_csv(SCHEDULE_GAMES_CSV, parse_dates=['gameDate'])
+    games['gameDate'] = games['gameDate'].dt.date
 
-            weeks = weeks[weeks['weekName'] != ''].copy()
-            weeks['startDate'] = pd.to_datetime(weeks['startDate']).dt.date
-            weeks['endDate'] = pd.to_datetime(weeks['endDate']).dt.date
-            weeks = weeks[['weekName', 'startDate', 'endDate']]
+    weeks = pd.read_csv(SCHEDULE_WEEKS_CSV, parse_dates=['startDate', 'endDate'])
+    weeks['startDate'] = weeks['startDate'].dt.date
+    weeks['endDate'] = weeks['endDate'].dt.date
 
-            return games, weeks
-        except Exception as e:
-            last_error = e
-    raise RuntimeError(str(last_error))
+    return games, weeks
 
 def default_week_range(weeks):
     """Find the NBA week containing today, falling back to the Monday-Sunday week containing today."""
@@ -643,7 +638,7 @@ with tab3:
     forecast_players = sorted(df_forecast['Player'].unique().tolist()) if not df_forecast.empty else []
 
     try:
-        schedule, schedule_weeks = fetch_schedule(CURRENT_SEASON_STR)
+        schedule, schedule_weeks = load_schedule()
         schedule_error = None
     except Exception as e:
         schedule, schedule_weeks = pd.DataFrame(), pd.DataFrame()
@@ -651,9 +646,9 @@ with tab3:
 
     if schedule_error:
         st.warning(
-            f"Couldn't load the NBA schedule right now ({schedule_error}). "
-            "Games-this-week will default to 0 until it loads — use 🔄 Clear Cache & "
-            "Reload Data in the sidebar to retry, or just edit 'Games This Week' manually below."
+            f"Couldn't load the NBA schedule ({schedule_error}). "
+            "Games-this-week will default to 0 until it's available — run refresh_data.py to "
+            "generate it, or just edit 'Games This Week' manually below."
         )
 
     week_start_default, week_end_default = default_week_range(schedule_weeks)
