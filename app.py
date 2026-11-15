@@ -295,34 +295,89 @@ def games_per_team(schedule_df, start_date, end_date):
     away_counts = window['awayTeam_teamTricode'].value_counts()
     return home_counts.add(away_counts, fill_value=0).astype(int)
 
-def project_weekly_totals(selected_players, df_data, team_games):
-    """Project category totals for selected players over a week, scaled by games played."""
-    if not selected_players:
+@st.cache_data(ttl=1800)
+def load_injury_report():
+    """Fetch current NBA injury statuses (ESPN's public injuries feed, no key required)."""
+    import requests
+    try:
+        resp = requests.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries",
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        report = {}
+        for team in data.get('injuries', []):
+            for inj in team.get('injuries', []):
+                name = inj.get('athlete', {}).get('displayName')
+                if name:
+                    report[name] = {
+                        'status': inj.get('status', ''),
+                        'comment': inj.get('shortComment', ''),
+                    }
+        return report
+    except Exception:
+        # Injury feed is a convenience, not critical - fail quietly and fall back to no status info
+        return {}
+
+# Statuses whose default suggestion is "won't play any games this week" - still editable
+OUT_STATUSES = {'Out', 'Suspended'}
+
+STATUS_ICONS = {
+    'Out': '🔴 Out',
+    'Suspended': '🔴 Suspended',
+    'Doubtful': '🟠 Doubtful',
+    'Questionable': '🟡 Questionable',
+    'Day-To-Day': '🟡 Day-To-Day',
+    'Probable': '🟢 Probable',
+}
+
+def build_player_week_table(selected_players, df_data, team_games, injury_report):
+    """Build an editable per-player table of games-this-week, seeded from the schedule and injury report."""
+    rows = []
+    for player in selected_players:
+        prow = df_data[df_data['Player'] == player]
+        if len(prow) == 0:
+            continue
+        team = prow.iloc[0]['Team']
+        auto_games = int(team_games.get(team, 0))
+        status_info = injury_report.get(player)
+        status = status_info['status'] if status_info else 'Healthy'
+        suggested_games = 0 if status in OUT_STATUSES else auto_games
+        rows.append({
+            'Player': player,
+            'Team': team,
+            'Status': STATUS_ICONS.get(status, status),
+            'Team Games': auto_games,
+            'Games This Week': suggested_games,
+        })
+    return pd.DataFrame(rows)
+
+def project_weekly_totals_from_table(week_table, df_data):
+    """Project category totals from an (optionally hand-edited) games-this-week table."""
+    if week_table is None or len(week_table) == 0:
         return None, None
 
-    player_data = df_data[df_data['Player'].isin(selected_players)].copy()
-    if len(player_data) == 0:
-        return None, None
-
-    player_data['Games This Week'] = player_data['Team'].map(team_games).fillna(0).astype(int)
+    merged = week_table.merge(df_data, on=['Player', 'Team'], how='left')
+    merged['Games This Week'] = merged['Games This Week'].fillna(0).astype(int)
 
     counting_stats = ['PTS', 'AST', 'TRB', 'STL', 'BLK', '3P', 'TOV', 'FG', 'FGA', 'FT', 'FTA']
-    totals = {'Games This Week': player_data['Games This Week'].sum()}
+    totals = {'Games This Week': merged['Games This Week'].sum()}
     for stat in counting_stats:
-        if stat in player_data.columns:
-            totals[stat] = (player_data[stat] * player_data['Games This Week']).sum()
+        if stat in merged.columns:
+            totals[stat] = (merged[stat] * merged['Games This Week']).sum()
 
     totals['FG%'] = (totals['FG'] / totals['FGA'] * 100) if totals.get('FGA', 0) > 0 else 0
     totals['FT%'] = (totals['FT'] / totals['FTA'] * 100) if totals.get('FTA', 0) > 0 else 0
 
     # Expected double-doubles/triple-doubles this week = season DD/TD rate per game * games this week
     for season_count_col, expected_col in [('DD', 'Expected DD'), ('TD', 'Expected TD')]:
-        if season_count_col in player_data.columns and 'G' in player_data.columns:
-            rate = player_data[season_count_col] / player_data['G'].replace(0, np.nan)
-            player_data[expected_col] = (rate.fillna(0) * player_data['Games This Week']).round(2)
-            totals[season_count_col] = player_data[expected_col].sum()
+        if season_count_col in merged.columns and 'G' in merged.columns:
+            rate = merged[season_count_col] / merged['G'].replace(0, np.nan)
+            merged[expected_col] = (rate.fillna(0) * merged['Games This Week']).round(2)
+            totals[season_count_col] = merged[expected_col].sum()
 
-    return totals, player_data
+    return totals, merged
 
 def display_stats(stats, label="Combined Stats", dd_td_info=None):
     """Display stats in a nice format"""
@@ -616,8 +671,16 @@ with tab3:
         st.warning("Week start must be before week end.")
     else:
         team_games = games_per_team(schedule, week_start, week_end)
+        injury_report = load_injury_report()
 
-        default_my_team = [p for p in load_team_config() if p in forecast_players]
+        saved_my_team = load_team_config()
+        default_my_team = [p for p in saved_my_team if p in forecast_players]
+        unmatched_config_players = [p for p in saved_my_team if p not in forecast_players]
+        if unmatched_config_players:
+            st.warning(
+                "These names in team_config.json don't match any player in the data and were skipped "
+                f"(check spelling against the CSV): {', '.join(unmatched_config_players)}"
+            )
 
         col1, col2 = st.columns(2)
 
@@ -644,8 +707,44 @@ with tab3:
             )
 
         if my_team and opponent_team:
-            my_totals, my_player_data = project_weekly_totals(my_team, df_forecast, team_games)
-            opp_totals, opp_player_data = project_weekly_totals(opponent_team, df_forecast, team_games)
+            st.subheader("Games This Week")
+            st.caption(
+                "Auto-filled from the schedule and current injury reports (🔴 Out defaults to 0 games). "
+                "Edit the 'Games This Week' column directly for anything the feed gets wrong — e.g. a "
+                "player questionable for some games but not others."
+            )
+
+            editor_col1, editor_col2 = st.columns(2)
+            editor_column_config = {
+                'Games This Week': st.column_config.NumberColumn(min_value=0, max_value=7, step=1),
+                'Team Games': st.column_config.NumberColumn(disabled=True),
+                'Status': st.column_config.TextColumn(disabled=True),
+                'Player': st.column_config.TextColumn(disabled=True),
+                'Team': st.column_config.TextColumn(disabled=True),
+            }
+
+            with editor_col1:
+                st.markdown("**My Team**")
+                my_week_table = st.data_editor(
+                    build_player_week_table(my_team, df_forecast, team_games, injury_report),
+                    column_config=editor_column_config,
+                    hide_index=True,
+                    use_container_width=True,
+                    key="my_week_editor",
+                )
+
+            with editor_col2:
+                st.markdown("**Opponent**")
+                opp_week_table = st.data_editor(
+                    build_player_week_table(opponent_team, df_forecast, team_games, injury_report),
+                    column_config=editor_column_config,
+                    hide_index=True,
+                    use_container_width=True,
+                    key="opp_week_editor",
+                )
+
+            my_totals, my_player_data = project_weekly_totals_from_table(my_week_table, df_forecast)
+            opp_totals, opp_player_data = project_weekly_totals_from_table(opp_week_table, df_forecast)
 
             st.subheader(f"Projected Totals ({week_start} to {week_end})")
 
@@ -680,7 +779,7 @@ with tab3:
             comparison_df = pd.DataFrame(comparison_data)
             st.dataframe(comparison_df, use_container_width=True, hide_index=True)
 
-            with st.expander("View Games This Week by Player"):
+            with st.expander("View Expected DD/TD by Player"):
                 breakdown_cols = ['Player', 'Team', 'Games This Week', 'Expected DD', 'Expected TD']
                 breakdown_col1, breakdown_col2 = st.columns(2)
                 with breakdown_col1:
