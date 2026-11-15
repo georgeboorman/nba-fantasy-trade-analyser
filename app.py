@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import json
+import os
+from datetime import date, timedelta
 
 # Page configuration
 st.set_page_config(
@@ -14,6 +17,29 @@ SEASON_OPTIONS = {
     "2026-27 (Current)": "nba_player_averages_2027.csv",
     "2025-26": "nba_player_averages_2026.csv",
 }
+
+# The weekly matchup forecast only makes sense against the current season's
+# roster/schedule, independent of whichever season is picked in the sidebar.
+CURRENT_SEASON_CSV = SEASON_OPTIONS["2026-27 (Current)"]
+CURRENT_SEASON_STR = "2026-27"
+
+TEAM_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'team_config.json')
+
+def load_team_config():
+    """Load the default 'my team' roster from team_config.json."""
+    if not os.path.exists(TEAM_CONFIG_PATH):
+        return []
+    try:
+        with open(TEAM_CONFIG_PATH, 'r') as f:
+            config = json.load(f)
+        return config.get('my_team', [])
+    except Exception:
+        return []
+
+def save_team_config(my_team):
+    """Persist the given roster as the default 'my team' in team_config.json."""
+    with open(TEAM_CONFIG_PATH, 'w') as f:
+        json.dump({'my_team': my_team}, f, indent=2)
 
 # Load data
 @st.cache_data
@@ -218,6 +244,86 @@ def calculate_combined_stats(selected_players, df_data):
     
     return stats
 
+@st.cache_data(ttl=3600)
+def load_schedule(season):
+    """Fetch the regular-season game schedule (date + home/away team) for a season."""
+    from nba_api.stats.endpoints import scheduleleaguev2
+    try:
+        response = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=30)
+        games = response.get_data_frames()[0]
+        # gameId prefix '002' marks regular season games (001 preseason, 004 playoffs, etc.)
+        games = games[games['gameId'].astype(str).str.startswith('002')].copy()
+        games['gameDate'] = pd.to_datetime(games['gameDate']).dt.date
+        return games[['gameDate', 'homeTeam_teamTricode', 'awayTeam_teamTricode']]
+    except Exception as e:
+        st.error(f"Could not load NBA schedule: {str(e)}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def load_schedule_weeks(season):
+    """Fetch the NBA's own week boundaries (start/end date) for a season."""
+    from nba_api.stats.endpoints import scheduleleaguev2
+    try:
+        response = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=30)
+        weeks = response.get_data_frames()[1].copy()
+        weeks = weeks[weeks['weekName'] != '']
+        weeks['startDate'] = pd.to_datetime(weeks['startDate']).dt.date
+        weeks['endDate'] = pd.to_datetime(weeks['endDate']).dt.date
+        return weeks[['weekName', 'startDate', 'endDate']]
+    except Exception:
+        return pd.DataFrame()
+
+def default_week_range(season):
+    """Find the NBA week containing today, falling back to the next 7 days."""
+    weeks = load_schedule_weeks(season)
+    today = date.today()
+    if not weeks.empty:
+        current = weeks[(weeks['startDate'] <= today) & (weeks['endDate'] >= today)]
+        if len(current) > 0:
+            return current.iloc[0]['startDate'], current.iloc[0]['endDate']
+        upcoming = weeks[weeks['startDate'] >= today].sort_values('startDate')
+        if len(upcoming) > 0:
+            return upcoming.iloc[0]['startDate'], upcoming.iloc[0]['endDate']
+    return today, today + timedelta(days=6)
+
+def games_per_team(schedule_df, start_date, end_date):
+    """Count how many games each team plays between start_date and end_date (inclusive)."""
+    if schedule_df.empty:
+        return pd.Series(dtype=int)
+    window = schedule_df[(schedule_df['gameDate'] >= start_date) & (schedule_df['gameDate'] <= end_date)]
+    home_counts = window['homeTeam_teamTricode'].value_counts()
+    away_counts = window['awayTeam_teamTricode'].value_counts()
+    return home_counts.add(away_counts, fill_value=0).astype(int)
+
+def project_weekly_totals(selected_players, df_data, team_games):
+    """Project category totals for selected players over a week, scaled by games played."""
+    if not selected_players:
+        return None, None
+
+    player_data = df_data[df_data['Player'].isin(selected_players)].copy()
+    if len(player_data) == 0:
+        return None, None
+
+    player_data['Games This Week'] = player_data['Team'].map(team_games).fillna(0).astype(int)
+
+    counting_stats = ['PTS', 'AST', 'TRB', 'STL', 'BLK', '3P', 'TOV', 'FG', 'FGA', 'FT', 'FTA']
+    totals = {'Games This Week': player_data['Games This Week'].sum()}
+    for stat in counting_stats:
+        if stat in player_data.columns:
+            totals[stat] = (player_data[stat] * player_data['Games This Week']).sum()
+
+    totals['FG%'] = (totals['FG'] / totals['FGA'] * 100) if totals.get('FGA', 0) > 0 else 0
+    totals['FT%'] = (totals['FT'] / totals['FTA'] * 100) if totals.get('FTA', 0) > 0 else 0
+
+    # Expected double-doubles/triple-doubles this week = season DD/TD rate per game * games this week
+    for season_count_col, expected_col in [('DD', 'Expected DD'), ('TD', 'Expected TD')]:
+        if season_count_col in player_data.columns and 'G' in player_data.columns:
+            rate = player_data[season_count_col] / player_data['G'].replace(0, np.nan)
+            player_data[expected_col] = (rate.fillna(0) * player_data['Games This Week']).round(2)
+            totals[season_count_col] = player_data[expected_col].sum()
+
+    return totals, player_data
+
 def display_stats(stats, label="Combined Stats", dd_td_info=None):
     """Display stats in a nice format"""
     if stats is None:
@@ -267,7 +373,7 @@ with st.sidebar:
         st.rerun()
 
 # Create tabs for different features
-tab1, tab2 = st.tabs(["Team Builder", "Trade Comparison"])
+tab1, tab2, tab3 = st.tabs(["Team Builder", "Trade Comparison", "Weekly Matchup"])
 
 with tab1:
     st.header("Build Your Team")
@@ -468,4 +574,129 @@ with tab2:
         st.info("Please select players for both sets to see the comparison.")
     else:
         st.info("Select players in both sets above to compare them.")
+
+with tab3:
+    st.header("Weekly Matchup Forecast")
+    st.write(
+        "Project category totals for a fantasy week, based on how many games each "
+        "player's team has scheduled and their per-game averages this season."
+    )
+
+    df_forecast = load_data(CURRENT_SEASON_CSV)
+    forecast_players = sorted(df_forecast['Player'].unique().tolist()) if not df_forecast.empty else []
+
+    schedule = load_schedule(CURRENT_SEASON_STR)
+    week_start_default, week_end_default = default_week_range(CURRENT_SEASON_STR)
+
+    if 'week_start' not in st.session_state:
+        st.session_state.week_start = week_start_default
+        st.session_state.week_end = week_end_default
+
+    nav_col1, nav_col2, nav_col3 = st.columns(3)
+    with nav_col1:
+        if st.button("⬅️ Previous Week"):
+            st.session_state.week_start -= timedelta(days=7)
+            st.session_state.week_end -= timedelta(days=7)
+    with nav_col2:
+        if st.button("This Week"):
+            st.session_state.week_start = week_start_default
+            st.session_state.week_end = week_end_default
+    with nav_col3:
+        if st.button("Next Week ➡️"):
+            st.session_state.week_start += timedelta(days=7)
+            st.session_state.week_end += timedelta(days=7)
+
+    date_col1, date_col2 = st.columns(2)
+    with date_col1:
+        week_start = st.date_input("Week start", key="week_start")
+    with date_col2:
+        week_end = st.date_input("Week end", key="week_end")
+
+    if week_start > week_end:
+        st.warning("Week start must be before week end.")
+    else:
+        team_games = games_per_team(schedule, week_start, week_end)
+
+        default_my_team = [p for p in load_team_config() if p in forecast_players]
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("My Team")
+            my_team = st.multiselect(
+                "Select your players",
+                forecast_players,
+                default=default_my_team,
+                key="my_team",
+                help="Defaults to the roster saved in team_config.json"
+            )
+            if st.button("💾 Save as default team"):
+                save_team_config(my_team)
+                st.success("Saved current selection as your default team.")
+
+        with col2:
+            st.subheader("Opponent's Team")
+            opponent_team = st.multiselect(
+                "Select opponent's players",
+                forecast_players,
+                key="opponent_team",
+                help="No default — set this each week for your matchup"
+            )
+
+        if my_team and opponent_team:
+            my_totals, my_player_data = project_weekly_totals(my_team, df_forecast, team_games)
+            opp_totals, opp_player_data = project_weekly_totals(opponent_team, df_forecast, team_games)
+
+            st.subheader(f"Projected Totals ({week_start} to {week_end})")
+
+            forecast_stat_columns = {
+                'Games This Week': 'Games This Week',
+                'PTS': 'Points',
+                'AST': 'Assists',
+                'TRB': 'Rebounds',
+                'STL': 'Steals',
+                'BLK': 'Blocks',
+                '3P': '3 Pointers',
+                'FG%': 'Field Goal %',
+                'FT%': 'Free Throw %',
+                'TOV': 'Turnovers',
+                'DD': 'Double-Doubles',
+                'TD': 'Triple-Doubles',
+            }
+
+            comparison_data = []
+            for stat_key, stat_name in forecast_stat_columns.items():
+                my_val = my_totals.get(stat_key, 0)
+                opp_val = opp_totals.get(stat_key, 0)
+                diff = my_val - opp_val
+                is_pct = stat_key in ['FG%', 'FT%']
+                comparison_data.append({
+                    'Category': stat_name,
+                    'My Team': f"{my_val:.2f}" if is_pct else f"{my_val:.1f}",
+                    'Opponent': f"{opp_val:.2f}" if is_pct else f"{opp_val:.1f}",
+                    'Difference': f"{diff:+.2f}" if is_pct else f"{diff:+.1f}",
+                })
+
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
+            with st.expander("View Games This Week by Player"):
+                breakdown_cols = ['Player', 'Team', 'Games This Week', 'Expected DD', 'Expected TD']
+                breakdown_col1, breakdown_col2 = st.columns(2)
+                with breakdown_col1:
+                    st.markdown("**My Team**")
+                    st.dataframe(
+                        my_player_data[[c for c in breakdown_cols if c in my_player_data.columns]],
+                        use_container_width=True, hide_index=True
+                    )
+                with breakdown_col2:
+                    st.markdown("**Opponent**")
+                    st.dataframe(
+                        opp_player_data[[c for c in breakdown_cols if c in opp_player_data.columns]],
+                        use_container_width=True, hide_index=True
+                    )
+        elif my_team or opponent_team:
+            st.info("Select players for both your team and your opponent's team to see the forecast.")
+        else:
+            st.info("Select players for both teams above to forecast this week's matchup.")
 

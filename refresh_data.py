@@ -46,6 +46,8 @@ COLUMN_MAP = {
     "BLK": "BLK",
     "PF": "PF",
     "PTS": "PTS",
+    "DD2": "DD",
+    "TD3": "TD",
 }
 
 # Set up logging
